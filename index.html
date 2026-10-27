@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>EventHub – Ticket Reservation Demo</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#17143a;--teal:#0f766e;--amber:#f59e0b;--bg:#edf1f7;--line:#d5dbe7}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 'Bricolage Grotesque',system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:var(--ink);color:#fff;padding:12px 20px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+header h1{font-size:20px;font-weight:800;margin:0;flex:1}
+header label{font-size:13px;display:flex;gap:6px;align-items:center}
+select,input{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid var(--line)}
+button{font:inherit;font-weight:600;padding:6px 12px;border-radius:8px;border:0;background:var(--teal);color:#fff;cursor:pointer}
+button:hover{filter:brightness(1.1)}button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid var(--amber)}
+button:disabled{background:#9aa3b5;cursor:not-allowed}
+button.alt{background:#e3e7f3;color:var(--ink)}button.red{background:#b91c1c}
+nav{display:flex;gap:6px;padding:10px 20px;background:#fff;border-bottom:1px solid var(--line);overflow-x:auto}
+nav button{background:none;color:#555}nav button.on{background:var(--ink);color:#fff}
+main{max-width:1000px;margin:18px auto;padding:0 16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:16px}
+.ev{background:#fff;border-radius:6px;border:1px solid var(--line);padding:16px}
+.ev h3{margin:0;font-size:19px}.muted{color:#667;font-size:13px}
+.tier{display:grid;grid-template-columns:1fr auto;gap:4px 10px;margin-top:12px;padding:10px 12px 10px 16px;background:#f8f6ff;border:1px dashed #8b86c9;border-left:6px solid var(--amber);border-radius:4px}
+.tier b{font-size:16px}.tier .act{grid-column:1/-1;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;font-weight:600;background:#e3e7f3}
+.held{background:#fde68a}.paid{background:#a7f3d0}.failed,.expired{background:#fecaca}.processing{background:#bfdbfe}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
+.kpi{background:#fff;border:1px solid var(--line);border-radius:6px;padding:12px 14px}.kpi b{display:block;font-size:26px}
+.bar{height:20px;background:var(--teal);border-radius:3px;min-width:2px}
+table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line)}
+td,th{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;font-size:14px}
+.form{background:#fff;border:1px solid var(--line);padding:16px;border-radius:6px;display:grid;gap:10px;max-width:560px}
+.form .row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+#log{max-width:1000px;margin:0 auto 70px;padding:0 16px;font:13px/1.5 ui-monospace,monospace}
+#log div{padding:2px 0}.bad{color:#b91c1c;font-weight:700}.good{color:var(--teal)}
+#toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 18px;border-radius:8px;display:none;z-index:9}
+h2{margin:6px 0 12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🎟 EventHub <span class="muted" style="color:#b8b4f0">demo</span></h1>
+  <label>Logged in as <select id="who"></select></label>
+  <label title="Hold lasts 30s instead of 10 min so you can watch it expire"><input type="checkbox" id="fast"> 30s holds</label>
+  <label title="Turn the lock OFF to see double-booking happen"><input type="checkbox" id="lock" checked> DB lock on</label>
+  <button class="alt" onclick="resetAll()">Reset data</button>
+</header>
+<nav id="nav"></nav>
+<main id="app"></main>
+<div id="log"></div>
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s), K = 'eventhub-v1';
+const USERS = [
+  {id:'u1',name:'Asha (Admin)',role:'admin'},
+  {id:'u2',name:'Ravi (Organizer)',role:'organizer'},
+  {id:'u3',name:'Meera (Organizer)',role:'organizer'},
+  {id:'u4',name:'Anu (Attendee)',role:'attendee'},
+  {id:'u5',name:'Kiran (Attendee)',role:'attendee'}];
+const uname = id => (USERS.find(u => u.id === id) || {name: id}).name;
+const day = n => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10);
+const uid = () => Math.random().toString(36).slice(2, 8);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const inr = n => '₹' + n.toLocaleString('en-IN');
+
+function seed() {
+  return {events: [
+    {id:'e1',owner:'u2',name:'Campus Techfest 2026',date:day(14),cutoff:day(13),tiers:[{id:'t1',name:'VIP',price:1500,qty:5},{id:'t2',name:'General',price:500,qty:20}]},
+    {id:'e2',owner:'u3',name:'Indie Music Night',date:day(7),cutoff:day(6),tiers:[{id:'t3',name:'Front Row',price:900,qty:8},{id:'t4',name:'General',price:300,qty:30}]},
+    {id:'e3',owner:'u2',name:'Last Year Alumni Meet',date:day(-1),cutoff:day(-2),tiers:[{id:'t5',name:'General',price:200,qty:50}]}
+  ], orders: []};
+}
+let db = JSON.parse(localStorage.getItem(K) || 'null') || seed();
+let me = USERS[3], tab = 'events', tick = 0;
+const save = () => localStorage.setItem(K, JSON.stringify(db));
+const holdMs = () => $('#fast').checked ? 30000 : 600000;
+
+/* ---------- "Backend" logic ---------- */
+// Seats taken = paid + processing + holds that have not expired yet
+function taken(t) {
+  const now = Date.now();
+  return db.orders.filter(o => o.tId === t.id && (o.status === 'paid' || o.status === 'processing' || (o.status === 'held' && o.exp > now)))
+    .reduce((s, o) => s + o.qty, 0);
+}
+const avail = t => t.qty - taken(t);
+const closed = ev => new Date(ev.cutoff + 'T23:59:59') < new Date();
+
+// Background job (cron/queue worker equivalent): release expired holds
+function release() {
+  let n = 0;
+  db.orders.forEach(o => { if (o.status === 'held' && o.exp <= Date.now()) { o.status = 'expired'; n++; } });
+  if (n) save();
+  return n;
+}
+
+// Mutex = stand-in for SELECT ... FOR UPDATE / a Redis lock. One booking runs at a time.
+let chain = Promise.resolve();
+const withLock = fn => { const p = chain.then(fn); chain = p.catch(() => {}); return p; };
+
+async function reserveCore(evId, tId, qty, userId) {
+  const ev = db.events.find(e => e.id === evId), t = ev && ev.tiers.find(x => x.id === tId);
+  if (!t) return {ok: false, msg: 'Event or tier not found'};
+  if (closed(ev)) return {ok: false, msg: 'Sales closed: cut-off date has passed'};
+  release();
+  const left = avail(t);                       // 1. read availability
+  if (qty > left) return {ok: false, msg: left ? `Only ${left} left` : 'Sold out'};
+  await sleep(50 + Math.random() * 250);       // 2. simulated DB latency (the danger zone)
+  const o = {id: uid(), evId, tId, uid: userId, qty, amount: qty * t.price, status: 'held', created: Date.now(), exp: Date.now() + holdMs()};
+  db.orders.push(o); save();                   // 3. write the hold
+  return {ok: true, o};
+}
+const reserve = (...a) => $('#lock').checked ? withLock(() => reserveCore(...a)) : reserveCore(...a);
+
+function pay(id) {
+  const o = db.orders.find(x => x.id === id);
+  if (!o || o.uid !== me.id) return toast('Not your order');
+  if (o.status !== 'held' || o.exp <= Date.now()) { release(); render(); return toast('Hold expired. Please reserve again.'); }
+  o.status = 'processing'; save(); render();
+  setTimeout(() => {                           // async mock payment gateway
+    o.status = Math.random() < 0.8 ? 'paid' : 'failed'; o.paidAt = Date.now(); save();
+    toast(o.status === 'paid' ? 'Payment approved 🎉' : 'Payment rejected. Seats released.'); render();
+  }, 1500);
+}
+
+/* ---------- Actions (with RBAC checks) ---------- */
+const need = role => { if (me.role !== role) { toast('Forbidden: ' + role + ' role required'); return false; } return true; };
+
+async function book(evId, tId) {
+  if (!need('attendee')) return;
+  const q = +$('#q' + tId).value, r = await reserve(evId, tId, q, me.id);
+  toast(r.ok ? 'Seats held. Pay before the timer ends.' : r.msg); render();
+}
+
+async function race(evId, tId) {
+  const ev = db.events.find(e => e.id === evId), t = ev.tiers.find(x => x.id === tId);
+  const L = $('#log'); L.innerHTML = `<div><b>⚡ Race test: 10 buyers hit "${esc(ev.name)} / ${esc(t.name)}" at once (${avail(t)} left, lock ${$('#lock').checked ? 'ON' : 'OFF'})</b></div>`;
+  let granted = 0;
+  await Promise.all(Array.from({length: 10}, async (_, i) => {
+    await sleep(Math.random() * 150);
+    const q = 1 + (i % 3), r = await reserve(evId, tId, q, 'Bot ' + (i + 1));
+    if (r.ok) granted += q;
+    L.innerHTML += `<div class="${r.ok ? 'good' : ''}">Bot ${i + 1} wants ${q}: ${r.ok ? 'GRANTED' : 'rejected (' + r.msg + ')'}</div>`;
+  }));
+  const over = taken(t) - t.qty;
+  L.innerHTML += over > 0 ? `<div class="bad">⚠ DOUBLE BOOKED: ${over} more seats sold than exist! Turn the lock on.</div>`
+                          : `<div class="good">✔ Capacity respected: ${taken(t)}/${t.qty} seats taken, no overselling.</div>`;
+  render();
+}
+
+function createEvent() {
+  if (!need('organizer')) return;
+  const f = id => $('#' + id).value, n = f('n').trim();
+  const tiers = [['VIP', 'v'], ['General', 'g']].map(([name, k], i) => ({id: uid(), name, price: +f(k + 'p'), qty: +f(k + 'q')})).filter(t => t.qty > 0);
+  if (!n || !f('d') || !f('c')) return toast('Fill in name, event date and cut-off date');
+  if (f('c') > f('d')) return toast('Sales cut-off must be on or before the event date');
+  if (!tiers.length || tiers.some(t => t.price < 0)) return toast('Add at least one tier with quantity > 0');
+  db.events.push({id: uid(), owner: me.id, name: n, date: f('d'), cutoff: f('c'), tiers}); save();
+  toast('Event created'); tab = 'events'; render();
+}
+function delEvent(id) {
+  if (!need('admin')) return;
+  db.events = db.events.filter(e => e.id !== id); db.orders = db.orders.filter(o => o.evId !== id); save(); render();
+}
+function resetAll() { db = seed(); save(); $('#log').innerHTML = ''; render(); }
+function toast(m) { const t = $('#toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 2600); }
+
+/* ---------- Views ---------- */
+function evCard(ev, mode) {
+  const shut = closed(ev);
+  return `<div class="ev"><h3>${esc(ev.name)}</h3>
+    <div class="muted">${ev.date} · sales close ${ev.cutoff} ${shut ? '<span class="tag failed">closed</span>' : ''}${mode !== 'buy' ? ' · by ' + uname(ev.owner) : ''}</div>
+    ${ev.tiers.map(t => { const a = avail(t); return `<div class="tier">
+      <div><b>${esc(t.name)}</b> <span class="muted">${inr(t.price)}</span></div>
+      <div class="${a < 0 ? 'bad' : ''}">${a} / ${t.qty} left</div>
+      <div class="act">
+        ${mode === 'buy' ? `<select id="q${t.id}">${[1,2,3,4].map(n => `<option>${n}</option>`).join('')}</select>
+        <button ${shut || a < 1 ? 'disabled' : ''} onclick="book('${ev.id}','${t.id}')">${a < 1 ? 'Sold out' : 'Reserve'}</button>` : ''}
+        <button class="alt" onclick="race('${ev.id}','${t.id}')">⚡ Race test</button>
+      </div></div>`; }).join('')}
+    ${mode === 'admin' ? `<p><button class="red" onclick="delEvent('${ev.id}')">Delete event</button></p>` : ''}</div>`;
+}
+
+function myTickets() {
+  const mine = db.orders.filter(o => o.uid === me.id).reverse();
+  if (!mine.length) return '<p>No tickets yet. Reserve some from Browse events.</p>';
+  return `<table><tr><th>Event</th><th>Tier</th><th>Qty</th><th>Total</th><th>Status</th><th></th></tr>` + mine.map(o => {
+    const ev = db.events.find(e => e.id === o.evId), t = ev && ev.tiers.find(x => x.id === o.tId);
+    return `<tr><td>${ev ? esc(ev.name) : '(deleted)'}</td><td>${t ? esc(t.name) : ''}</td><td>${o.qty}</td><td>${inr(o.amount)}</td>
+      <td><span class="tag ${o.status}">${o.status}</span> ${o.status === 'held' ? `<b data-exp="${o.exp}"></b>` : ''}</td>
+      <td>${o.status === 'held' ? `<button onclick="pay('${o.id}')">Pay now</button>` : ''}</td></tr>`;
+  }).join('') + '</table>';
+}
+
+function createForm() {
+  return `<div class="form"><h2>Create event</h2>
+    <input id="n" placeholder="Event name">
+    <div class="row"><label class="muted">Event date<input id="d" type="date"></label><label class="muted">Sales cut-off<input id="c" type="date"></label></div>
+    <div class="row"><b>VIP</b><input id="vp" type="number" placeholder="Price ₹" value="1000"><input id="vq" type="number" placeholder="Qty" value="10"></div>
+    <div class="row"><b>General</b><input id="gp" type="number" placeholder="Price ₹" value="300"><input id="gq" type="number" placeholder="Qty" value="50"></div>
+    <button onclick="createEvent()">Publish event</button></div>`;
+}
+
+function dash() {
+  const evs = me.role === 'admin' ? db.events : db.events.filter(e => e.owner === me.id);
+  const ids = evs.map(e => e.id), os = db.orders.filter(o => ids.includes(o.evId));
+  const paid = os.filter(o => o.status === 'paid'), rev = paid.reduce((s, o) => s + o.amount, 0);
+  const conv = os.length ? Math.round(paid.length / os.length * 100) : 0;
+  const per = evs.map(e => ({e, r: paid.filter(o => o.evId === e.id).reduce((s, o) => s + o.amount, 0)})), max = Math.max(1, ...per.map(p => p.r));
+  const cnt = s => os.filter(o => o.status === s).length;
+  return `<h2>${me.role === 'admin' ? 'Platform overview' : 'Your dashboard'}</h2>
+  <div class="kpis"><div class="kpi">Revenue<b>${inr(rev)}</b></div><div class="kpi">Tickets sold<b>${paid.reduce((s, o) => s + o.qty, 0)}</b></div>
+  <div class="kpi">Conversion<b>${conv}%</b><span class="muted">paid ÷ reservations</span></div>
+  <div class="kpi">Active holds<b>${os.filter(o => o.status === 'held' && o.exp > Date.now()).length}</b></div></div>
+  <h3>Revenue by event</h3>${per.map(p => `<p>${esc(p.e.name)} <b>${inr(p.r)}</b><br><div class="bar" style="width:${p.r / max * 100}%"></div></p>`).join('') || '<p>No events yet.</p>'}
+  <h3>Reservation funnel</h3><p>Reserved: <b>${os.length}</b> → Paid: <b>${cnt('paid')}</b> · Failed payment: ${cnt('failed')} · Expired holds: ${cnt('expired')}</p>
+  ${me.role === 'admin' ? `<h3>Users & roles</h3><table>${USERS.map(u => `<tr><td>${u.name}</td><td>${u.role}</td></tr>`).join('')}</table>` : ''}`;
+}
+
+function render() {
+  const tabs = {attendee: [['events', 'Browse events'], ['tickets', 'My tickets']],
+    organizer: [['events', 'My events'], ['create', 'Create event'], ['dash', 'Dashboard']],
+    admin: [['dash', 'Overview'], ['events', 'All events']]}[me.role];
+  if (!tabs.some(t => t[0] === tab)) tab = tabs[0][0];
+  $('#nav').innerHTML = tabs.map(([k, l]) => `<button class="${k === tab ? 'on' : ''}" onclick="tab='${k}';render()">${l}</button>`).join('');
+  let h;
+  if (tab === 'tickets') h = '<h2>My tickets</h2>' + myTickets();
+  else if (tab === 'create') h = createForm();
+  else if (tab === 'dash') h = dash();
+  else {
+    const evs = me.role === 'organizer' ? db.events.filter(e => e.owner === me.id) : db.events;
+    h = `<h2>${me.role === 'attendee' ? 'Upcoming events' : me.role === 'admin' ? 'All events' : 'Your events'}</h2><div class="grid">` +
+      (evs.map(e => evCard(e, me.role === 'attendee' ? 'buy' : me.role === 'admin' ? 'admin' : 'view')).join('') || '<p>Nothing here yet. Create your first event.</p>') + '</div>';
+  }
+  $('#app').innerHTML = h; countdowns();
+}
+function countdowns() {
+  document.querySelectorAll('[data-exp]').forEach(el => {
+    const s = Math.max(0, Math.round((+el.dataset.exp - Date.now()) / 1000));
+    el.textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  });
+}
+
+/* ---------- Boot ---------- */
+$('#who').innerHTML = USERS.map(u => `<option value="${u.id}" ${u.id === me.id ? 'selected' : ''}>${u.name}</option>`).join('');
+$('#who').onchange = e => { me = USERS.find(u => u.id === e.target.value); tab = ''; render(); };
+setInterval(() => {          // cron worker: runs every second here, every minute in production
+  tick++;
+  if (release() || (tab === 'dash' && tick % 3 === 0)) render(); else countdowns();
+}, 1000);
+render();
+</script>
+</body>
+</html>
